@@ -5,9 +5,14 @@ import sqlite3
 import os
 from datetime import datetime
 import csv
+import smtplib
+from email.message import EmailMessage
 
 API_TOKEN = '7504345200:AAFl3uHBy3Qw0ZUW8INGrnoZamxcwjKe_lc'
 ADMIN_ID = 123456789  # Cambia por tu ID de admin
+
+EMAIL_ADDRESS = "homesoftcore@gmail.com"
+EMAIL_PASSWORD = "xymrywxnprquxevz"
 
 bot = telebot.TeleBot(API_TOKEN)
 app = Flask(__name__)
@@ -45,11 +50,12 @@ def init_db():
                 user_id INTEGER,
                 productos TEXT,
                 direccion TEXT,
+                telefono TEXT,
+                correo TEXT,
                 total REAL
             )
         ''')
 
-        # Productos naturales por defecto
         cursor.execute("SELECT COUNT(*) FROM productos")
         if cursor.fetchone()[0] == 0:
             productos = [
@@ -62,7 +68,6 @@ def init_db():
             cursor.executemany("INSERT INTO productos (nombre, descripcion, precio) VALUES (?, ?, ?)", productos)
         conn.commit()
 
-# 📒 Utilidades
 def es_admin(user_id):
     return user_id == ADMIN_ID
 
@@ -86,7 +91,6 @@ def set_language(user_id, lang):
         cursor.execute("INSERT OR REPLACE INTO usuarios (user_id, idioma) VALUES (?, ?)", (user_id, lang))
         conn.commit()
 
-# 🚀 Iniciar
 @bot.message_handler(commands=['start'])
 def start(message):
     markup = ReplyKeyboardMarkup(resize_keyboard=True)
@@ -100,7 +104,6 @@ def seleccionar_idioma(message):
     registrar_auditoria(message.from_user.id, message.from_user.username, f"Idioma: {lang}")
     mostrar_productos(message)
 
-# 🍵 Mostrar productos para elegir
 def mostrar_productos(message):
     lang = get_language(message.from_user.id)
     with sqlite3.connect('database.db') as conn:
@@ -142,19 +145,78 @@ def pedir_direccion(message, productos_str):
     total = calcular_total(productos_str)
     total_con_iva = round(total * 1.15, 2)
 
+    mensaje = (
+        f"📟 Resumen de compra:\n{productos_str}\n📍 Dirección: {direccion}\n💵 Total con IVA (15%): ${total_con_iva}\n\nPor favor ingresa tu número de WhatsApp:"
+        if lang == "es" else
+        f"📟 Order summary:\n{productos_str}\n📍 Address: {direccion}\n💵 Total with VAT (15%): ${total_con_iva}\n\nPlease enter your WhatsApp number:"
+    )
+    bot.send_message(message.chat.id, mensaje, reply_markup=ForceReply())
+    registrar_auditoria(user_id, message.from_user.username, "Dirección ingresada")
+    bot.register_next_step_handler(message, pedir_numero_whatsapp, productos_str, direccion, total_con_iva)
+
+def pedir_numero_whatsapp(message, productos_str, direccion, total_con_iva):
+    numero = message.text.strip().replace("+", "").replace(" ", "")
+    user_id = message.from_user.id
+    lang = get_language(user_id)
+
+    registrar_auditoria(user_id, message.from_user.username, f"Número WhatsApp: {numero}")
+
+    pregunta = "📧 Ingresa tu correo electrónico para enviarte el resumen:" if lang == "es" else "📧 Enter your email to receive the summary:"
+    bot.send_message(message.chat.id, pregunta, reply_markup=ForceReply())
+    bot.register_next_step_handler(message, pedir_correo, productos_str, direccion, numero, total_con_iva)
+
+def pedir_correo(message, productos_str, direccion, numero, total_con_iva):
+    correo = message.text.strip()
+    user_id = message.from_user.id
+    lang = get_language(user_id)
+
     with sqlite3.connect('database.db') as conn:
         cursor = conn.cursor()
-        cursor.execute("INSERT INTO ordenes (user_id, productos, direccion, total) VALUES (?, ?, ?, ?)",
-                       (user_id, productos_str, direccion, total_con_iva))
+        cursor.execute("INSERT INTO ordenes (user_id, productos, direccion, telefono, correo, total) VALUES (?, ?, ?, ?, ?, ?)",
+                       (user_id, productos_str, direccion, numero, correo, total_con_iva))
         conn.commit()
 
-    mensaje = (
-        f"📟 Resumen de compra:\n{productos_str}\n📍 Dirección: {direccion}\n💵 Total con IVA (15%): ${total_con_iva}\n\n¡Gracias por tu compra! 🌿"
-        if lang == "es" else
-        f"📟 Order summary:\n{productos_str}\n📍 Address: {direccion}\n💵 Total with VAT (15%): ${total_con_iva}\n\nThanks for your purchase! 🌿"
+    registrar_auditoria(user_id, message.from_user.username, f"Correo: {correo}")
+
+    enviar_correo(productos_str, direccion, numero, correo, total_con_iva)
+
+    texto_mensaje = (
+        f"Hola! Gracias por tu compra. Resumen:\nProductos: {productos_str}\nDirección: {direccion}\nTotal: ${total_con_iva}\nTe contactaremos pronto!"
     )
-    bot.send_message(message.chat.id, mensaje, reply_markup=ReplyKeyboardRemove())
-    registrar_auditoria(user_id, message.from_user.username, "Compra realizada")
+    texto_mensaje = texto_mensaje.replace(" ", "%20").replace("\n", "%0A")
+    enlace = f"https://wa.me/{numero}?text={texto_mensaje}"
+
+    mensaje_final = (
+        f"✅ Gracias por tu compra. Haz clic aquí para abrir WhatsApp:\n{enlace}"
+        if lang == "es" else
+        f"✅ Thanks for your purchase! Click here to open WhatsApp:\n{enlace}"
+    )
+    bot.send_message(message.chat.id, mensaje_final, reply_markup=ReplyKeyboardRemove())
+
+def enviar_correo(productos, direccion, telefono, correo, total):
+    msg = EmailMessage()
+    msg['Subject'] = 'Resumen de tu orden'
+    msg['From'] = EMAIL_ADDRESS
+    msg['To'] = correo
+
+    cuerpo = f"""
+    📦 Resumen de tu orden:
+    Productos: {productos}
+    Dirección: {direccion}
+    Teléfono: {telefono}
+    Total: ${total}
+
+    Gracias por tu compra.
+    """
+    msg.set_content(cuerpo)
+
+    try:
+        with smtplib.SMTP_SSL('smtp.gmail.com', 465) as smtp:
+            smtp.login(EMAIL_ADDRESS, EMAIL_PASSWORD)
+            smtp.send_message(msg)
+        print("✅ Correo enviado correctamente.")
+    except Exception as e:
+        print(f"❌ Error al enviar correo: {e}")
 
 def calcular_total(productos_str):
     nombres = [p.strip() for p in productos_str.split(",")]
@@ -168,7 +230,6 @@ def calcular_total(productos_str):
                 total += row[0]
     return total
 
-# CSV y admin
 @app.route('/download_audits/<admin_id>', methods=['GET'])
 def download_audits(admin_id):
     if str(ADMIN_ID) != admin_id:
