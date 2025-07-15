@@ -8,11 +8,11 @@ import csv
 import smtplib
 from email.message import EmailMessage
 
-API_TOKEN = '7504345200:AAFl3uHBy3Qw0ZUW8INGrnoZamxcwjKe_lc'
+API_TOKEN = 'YOUR_KEY'
 ADMIN_ID = 123456789  # Cambia por tu ID de admin
 
-EMAIL_ADDRESS = "homesoftcore@gmail.com"
-EMAIL_PASSWORD = "xymrywxnprquxevz"
+EMAIL_ADDRESS = "YOUREMAIL@gmail.com"
+EMAIL_PASSWORD = "YOUR_KEY"
 
 bot = telebot.TeleBot(API_TOKEN)
 app = Flask(__name__)
