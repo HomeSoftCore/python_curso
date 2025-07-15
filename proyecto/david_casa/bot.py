@@ -1,15 +1,13 @@
 import telebot
-from telebot.types import ReplyKeyboardMarkup, KeyboardButton, ForceReply
+from telebot.types import ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove, ForceReply
 from flask import Flask, request, send_file
 import sqlite3
 import os
 from datetime import datetime
 import csv
 
-# 🧩 Configura tus variables
-API_TOKEN = 'TU_BOT_TOKEN_AQUI'
-WEBHOOK_URL = 'https://tudominio.com/webhook'
-ADMIN_ID = 123456789  # 🔐 Reemplaza con tu ID real de Telegram
+API_TOKEN = '7504345200:AAFl3uHBy3Qw0ZUW8INGrnoZamxcwjKe_lc'
+ADMIN_ID = 123456789  # Cambia por tu ID de admin
 
 bot = telebot.TeleBot(API_TOKEN)
 app = Flask(__name__)
@@ -31,7 +29,8 @@ def init_db():
             CREATE TABLE IF NOT EXISTS productos (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 nombre TEXT,
-                descripcion TEXT
+                descripcion TEXT,
+                precio REAL
             )
         ''')
         cursor.execute('''
@@ -40,19 +39,33 @@ def init_db():
                 idioma TEXT
             )
         ''')
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS ordenes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER,
+                productos TEXT,
+                direccion TEXT,
+                total REAL
+            )
+        ''')
+
+        # Productos naturales por defecto
         cursor.execute("SELECT COUNT(*) FROM productos")
         if cursor.fetchone()[0] == 0:
-            cursor.execute("INSERT INTO productos (nombre, descripcion) VALUES (?, ?)",
-                           ("Paracetamol", "Alivia el dolor y la fiebre"))
-            cursor.execute("INSERT INTO productos (nombre, descripcion) VALUES (?, ?)",
-                           ("Ibuprofeno", "Antiinflamatorio y analgésico"))
+            productos = [
+                ("Té de manzanilla", "Relajante natural", 2.5),
+                ("Infusión de menta", "Alivia malestares digestivos", 2.0),
+                ("Té de jengibre y limón", "Refuerza sistema inmune", 3.0),
+                ("Infusión de frutos rojos", "Antioxidante", 3.5),
+                ("Té verde", "Energizante natural", 2.8),
+            ]
+            cursor.executemany("INSERT INTO productos (nombre, descripcion, precio) VALUES (?, ?, ?)", productos)
         conn.commit()
 
-# 👁‍🗨 Verificación admin
+# 📒 Utilidades
 def es_admin(user_id):
     return user_id == ADMIN_ID
 
-# 📝 Auditoría
 def registrar_auditoria(user_id, username, action):
     with sqlite3.connect('database.db') as conn:
         cursor = conn.cursor()
@@ -60,7 +73,6 @@ def registrar_auditoria(user_id, username, action):
                        (user_id, username, action, datetime.now().isoformat()))
         conn.commit()
 
-# 🌐 Idioma
 def get_language(user_id):
     with sqlite3.connect('database.db') as conn:
         cursor = conn.cursor()
@@ -74,157 +86,89 @@ def set_language(user_id, lang):
         cursor.execute("INSERT OR REPLACE INTO usuarios (user_id, idioma) VALUES (?, ?)", (user_id, lang))
         conn.commit()
 
-# 📋 Menú
-def send_menu(message):
-    lang = get_language(message.from_user.id)
-    is_admin = es_admin(message.from_user.id)
-    markup = ReplyKeyboardMarkup(resize_keyboard=True)
-    if lang == "en":
-        buttons = ["💊 Show products"]
-        if is_admin:
-            buttons += ["Add product", "Delete product", "Statistics", "Download report"]
-        text = "Choose an option:"
-    else:
-        buttons = ["💊 Ver productos"]
-        if is_admin:
-            buttons += ["Agregar producto", "Eliminar producto", "Estadísticas", "Descargar reporte"]
-        text = "Elige una opción:"
-    for b in buttons:
-        markup.add(KeyboardButton(b))
-    bot.send_message(message.chat.id, text, reply_markup=markup)
-
-# ▶️ /start
+# 🚀 Iniciar
 @bot.message_handler(commands=['start'])
-def handle_start(message):
-    registrar_auditoria(message.from_user.id, message.from_user.username, "start")
+def start(message):
     markup = ReplyKeyboardMarkup(resize_keyboard=True)
     markup.add(KeyboardButton("Español"), KeyboardButton("English"))
     bot.send_message(message.chat.id, "Elige tu idioma / Choose your language", reply_markup=markup)
 
-# 🧠 Manejo general
-@bot.message_handler(func=lambda m: True)
-def handle_message(message):
-    user_id = message.from_user.id
-    username = message.from_user.username
-    text = message.text.lower()
-    lang = get_language(user_id)
+@bot.message_handler(func=lambda m: m.text in ["Español", "English"])
+def seleccionar_idioma(message):
+    lang = "es" if message.text == "Español" else "en"
+    set_language(message.from_user.id, lang)
+    registrar_auditoria(message.from_user.id, message.from_user.username, f"Idioma: {lang}")
+    mostrar_productos(message)
 
-    # Cambio de idioma
-    if text in ["español", "spanish"]:
-        set_language(user_id, "es")
-        registrar_auditoria(user_id, username, "Idioma: Español")
-        bot.send_message(message.chat.id, "Idioma establecido a Español.")
-        send_menu(message)
-    elif text in ["english", "inglés"]:
-        set_language(user_id, "en")
-        registrar_auditoria(user_id, username, "Language: English")
-        bot.send_message(message.chat.id, "Language set to English.")
-        send_menu(message)
-
-    # Ver productos
-    elif "ver productos" in text or "show products" in text:
-        registrar_auditoria(user_id, username, "Ver productos")
-        with sqlite3.connect('database.db') as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT nombre, descripcion FROM productos")
-            productos = cursor.fetchall()
-        for nombre, descripcion in productos:
-            bot.send_message(message.chat.id, f"💊 *{nombre}*\n📝 {descripcion}", parse_mode='Markdown')
-
-    # Agregar producto (admin)
-    elif text in ["agregar producto", "add product"] and es_admin(user_id):
-        prompt = "Nombre del producto:" if lang == "es" else "Product name:"
-        msg = bot.send_message(message.chat.id, prompt, reply_markup=ForceReply())
-        bot.register_next_step_handler(msg, recibir_nombre_producto)
-
-    # Eliminar producto (admin)
-    elif text in ["eliminar producto", "delete product"] and es_admin(user_id):
-        with sqlite3.connect('database.db') as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT id, nombre FROM productos")
-            productos = cursor.fetchall()
-        if not productos:
-            msg = "No hay productos." if lang == "es" else "No products found."
-            bot.send_message(message.chat.id, msg)
-        else:
-            lista = "\n".join([f"{p[0]} - {p[1]}" for p in productos])
-            prompt = "Escribe el ID del producto a eliminar:" if lang == "es" else "Enter the product ID to delete:"
-            bot.send_message(message.chat.id, lista)
-            msg = bot.send_message(message.chat.id, prompt, reply_markup=ForceReply())
-            bot.register_next_step_handler(msg, eliminar_producto)
-
-    # Estadísticas (admin)
-    elif text in ["estadísticas", "statistics"] and es_admin(user_id):
-        with sqlite3.connect('database.db') as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT COUNT(*) FROM usuarios")
-            total_usuarios = cursor.fetchone()[0]
-            cursor.execute("SELECT COUNT(*) FROM auditorias")
-            total_auditorias = cursor.fetchone()[0]
-            cursor.execute("SELECT COUNT(*) FROM productos")
-            total_productos = cursor.fetchone()[0]
-        if lang == "es":
-            msg = f"📊 Estadísticas:\nUsuarios: {total_usuarios}\nAuditorías: {total_auditorias}\nProductos: {total_productos}"
-        else:
-            msg = f"📊 Statistics:\nUsers: {total_usuarios}\nAudits: {total_auditorias}\nProducts: {total_productos}"
-        registrar_auditoria(user_id, username, "Ver estadísticas")
-        bot.send_message(message.chat.id, msg)
-
-    # Reporte CSV
-    elif text in ["descargar reporte", "download report"] and es_admin(user_id):
-        registrar_auditoria(user_id, username, "Descargar CSV")
-        url = f"{WEBHOOK_URL}/download_audits/{ADMIN_ID}"
-        msg = "📥 Haz clic para descargar el reporte CSV:\n" if lang == "es" else "📥 Click to download CSV report:\n"
-        bot.send_message(message.chat.id, msg + url)
-
-    else:
-        mensaje = "Comando no reconocido." if lang == "es" else "Command not recognized."
-        bot.send_message(message.chat.id, mensaje)
-
-# ➕ Agregar producto paso a paso
-def recibir_nombre_producto(message):
-    nombre = message.text
-    bot.send_message(message.chat.id, "Descripción del producto:")
-    bot.register_next_step_handler(message, lambda msg: guardar_producto(msg, nombre))
-
-def guardar_producto(message, nombre):
-    descripcion = message.text
+# 🍵 Mostrar productos para elegir
+def mostrar_productos(message):
+    lang = get_language(message.from_user.id)
     with sqlite3.connect('database.db') as conn:
         cursor = conn.cursor()
-        cursor.execute("INSERT INTO productos (nombre, descripcion) VALUES (?, ?)", (nombre, descripcion))
-        conn.commit()
-    registrar_auditoria(message.from_user.id, message.from_user.username, f"Agregó producto: {nombre}")
+        cursor.execute("SELECT id, nombre FROM productos")
+        productos = cursor.fetchall()
+
+    markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
+    for pid, nombre in productos:
+        markup.add(KeyboardButton(f"{nombre}"))
+    markup.add(KeyboardButton("✅ Finalizar selección"))
+
+    msg = "Selecciona los productos naturales que deseas:" if lang == "es" else "Select the natural products you want:"
+    bot.send_message(message.chat.id, msg, reply_markup=markup)
+    bot.register_next_step_handler(message, recolectar_productos, [])
+
+def recolectar_productos(message, seleccionados):
     lang = get_language(message.from_user.id)
-    bot.send_message(message.chat.id, "Producto guardado." if lang == "es" else "Product saved.")
 
-# ❌ Eliminar producto
-def eliminar_producto(message):
-    try:
-        id_producto = int(message.text.strip())
-        with sqlite3.connect('database.db') as conn:
-            cursor = conn.cursor()
-            cursor.execute("DELETE FROM productos WHERE id = ?", (id_producto,))
-            conn.commit()
-        registrar_auditoria(message.from_user.id, message.from_user.username, f"Eliminó producto {id_producto}")
-        lang = get_language(message.from_user.id)
-        bot.send_message(message.chat.id, "Producto eliminado." if lang == "es" else "Product deleted.")
-    except Exception:
-        bot.send_message(message.chat.id, "ID inválido.")
+    if message.text == "✅ Finalizar selección":
+        if not seleccionados:
+            bot.send_message(message.chat.id, "No seleccionaste ningún producto." if lang == "es" else "You didn't select any product.")
+            return mostrar_productos(message)
+        else:
+            productos_str = ", ".join(seleccionados)
+            bot.send_message(message.chat.id, "📍 Ingresa tu dirección de envío:" if lang == "es" else "📍 Enter your delivery address:", reply_markup=ForceReply())
+            bot.register_next_step_handler(message, pedir_direccion, productos_str)
+            return
 
-# 🌐 Webhook Flask
-@app.route('/webhook', methods=['POST'])
-def webhook():
-    update = telebot.types.Update.de_json(request.get_data().decode("utf-8"))
-    bot.process_new_updates([update])
-    return '', 200
+    seleccionados.append(message.text)
+    bot.send_message(message.chat.id, f"🟢 Agregado: {message.text}")
+    bot.register_next_step_handler(message, recolectar_productos, seleccionados)
 
-@app.route('/set_webhook', methods=['GET'])
-def set_webhook():
-    bot.remove_webhook()
-    bot.set_webhook(url=WEBHOOK_URL)
-    return "Webhook configurado."
+def pedir_direccion(message, productos_str):
+    direccion = message.text
+    user_id = message.from_user.id
+    lang = get_language(user_id)
 
-# 📤 Descargar CSV
+    total = calcular_total(productos_str)
+    total_con_iva = round(total * 1.15, 2)
+
+    with sqlite3.connect('database.db') as conn:
+        cursor = conn.cursor()
+        cursor.execute("INSERT INTO ordenes (user_id, productos, direccion, total) VALUES (?, ?, ?, ?)",
+                       (user_id, productos_str, direccion, total_con_iva))
+        conn.commit()
+
+    mensaje = (
+        f"📟 Resumen de compra:\n{productos_str}\n📍 Dirección: {direccion}\n💵 Total con IVA (15%): ${total_con_iva}\n\n¡Gracias por tu compra! 🌿"
+        if lang == "es" else
+        f"📟 Order summary:\n{productos_str}\n📍 Address: {direccion}\n💵 Total with VAT (15%): ${total_con_iva}\n\nThanks for your purchase! 🌿"
+    )
+    bot.send_message(message.chat.id, mensaje, reply_markup=ReplyKeyboardRemove())
+    registrar_auditoria(user_id, message.from_user.username, "Compra realizada")
+
+def calcular_total(productos_str):
+    nombres = [p.strip() for p in productos_str.split(",")]
+    total = 0
+    with sqlite3.connect('database.db') as conn:
+        cursor = conn.cursor()
+        for nombre in nombres:
+            cursor.execute("SELECT precio FROM productos WHERE nombre = ?", (nombre,))
+            row = cursor.fetchone()
+            if row:
+                total += row[0]
+    return total
+
+# CSV y admin
 @app.route('/download_audits/<admin_id>', methods=['GET'])
 def download_audits(admin_id):
     if str(ADMIN_ID) != admin_id:
@@ -240,7 +184,16 @@ def download_audits(admin_id):
         writer.writerows(rows)
     return send_file(filename, as_attachment=True)
 
-# ▶️ Main
+@app.route('/webhook', methods=['POST'])
+def webhook():
+    update = telebot.types.Update.de_json(request.get_data().decode("utf-8"))
+    bot.process_new_updates([update])
+    return '', 200
+
+@app.route('/')
+def home():
+    return 'Bot funcionando localmente'
+
 if __name__ == '__main__':
     init_db()
-    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
+    bot.polling()
